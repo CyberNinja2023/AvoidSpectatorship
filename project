@@ -1,0 +1,104 @@
+echo "For the successful execution of the app, we need to install the following libraries"
+echo ""
+sudo apt-get update
+sudo apt-get install v4l-utils alsa-utils libnotify-bin zenity
+echo ""
+
+# Disable display of control characters, including ^C
+stty -echoctl
+
+# Function to handle the interrupt signal (Ctrl+C)
+interrupt_handler() {
+    # Enable display of control characters again
+    stty echoctl
+    echo "Program is done"
+    exit 0
+}
+
+# Set up a trap to call the interrupt_handler function when SIGINT is received
+trap interrupt_handler SIGINT
+
+#List of camera devices
+echo "LIST OF CAMERA DEVICES:"
+echo ""
+echo "$(v4l2-ctl --list-devices)"
+echo ""
+
+#List of microphone devices
+echo "LIST OF MICROPHONE DEVICES:"
+echo ""
+echo "$(arecord -l)"
+echo ""
+
+echo "program starts to check the camera and microphone processes"
+echo ""
+
+# Arrays to store seen processes for cameras and microphones
+seen_cameras=()
+seen_microphones=()
+
+while true; do
+    # List camera devices and processes
+    devices=$(v4l2-ctl --list-devices | grep -o '/dev/video[0-9]*')
+    camera_processes=$(sudo lsof "$devices" 2>&1 | awk -v device="$devices" '$9 == device {print $1}')
+
+    for process in $camera_processes; do
+        if [[ ! "${seen_cameras[@]}" =~ $process ]]; then
+            kill -SIGSTOP $(pgrep "$process")
+            echo "New camera process detected: $process"
+            zenity --question --title="Camera Access" --text="$process wants to access the camera on $(date +'%Y-%m-%d %H:%M:%S'). Do you want to allow or deny this action?" --ok-label="Allow" --cancel-label="Deny" --icon-name="camera"
+            choice=$?
+            if [ $choice -eq 1 ]; then
+                echo "User clicked 'Deny' for $process."
+                pkill -f "$process"
+                echo "$process has been terminated."
+            fi
+            kill -SIGCONT $(pgrep "$process")
+            seen_cameras+=("$process")
+        fi
+    done
+
+    for seen_process in "${seen_cameras[@]}"; do
+        if [[ ! "${camera_processes[@]}" =~ $seen_process ]]; then
+            echo "$seen_process is no longer accessing the camera."
+            notify-send -i /home/kalyan/Documents/project/avoidspectatorship/usr/bin/camera.png "$seen_process terminated camera on $(date +'%d-%m-%Y %H:%M:%S')"
+            seen_cameras=("${seen_cameras[@]/$seen_process}")
+        fi
+    done
+
+    # List microphone processes
+    microphone_sources=$(pactl list source-outputs)
+    processes=($(awk -F'application.process.binary = "' '/application.process.binary/ {print $2}' <<< "$microphone_sources"))
+
+    for seen_process in "${seen_microphones[@]}"; do
+        if [[ ! "${processes[@]}" =~ $seen_process ]]; then
+            echo "$seen_process is no longer accessing the microphone."
+            notify-send -i /home/kalyan/Downloads/voice-assistant.png "$seen_process terminated microphone on $(date +'%H:%M:%S %d-%m-%Y')"
+            seen_microphones=("${seen_microphones[@]/$seen_process}")
+        fi
+    done
+
+    for process in "${processes[@]}"; do
+        process=$(echo "$process" | awk -F'"' '{print $1}')
+        if [[ ! "${seen_microphones[@]}" =~ $process ]]; then
+            kill -SIGSTOP $(pgrep "$process")
+            echo "New microphone process detected: $process"
+            zenity --question --title="Microphone Access" --text="$process wants to access the microphone on $(date +'%Y-%m-%d %H:%M:%S'). Do you want to allow or deny this action?" --ok-label="Allow" --cancel-label="Deny" --icon-name="microphone"
+            choice=$?
+            if [ $choice -eq 1 ]; then
+                echo "User clicked 'Deny' for $process."
+                pkill -f "$process"
+                echo "$process has been terminated."
+            else
+                if [[ ! "${seen_microphones[@]}" =~ $process ]]; then
+                    count=$((count+1))
+                    echo "Microphone access has been allowed for $count process"
+                fi
+            kill -SIGCONT $(pgrep "$process")
+            fi
+            seen_microphones+=("$process")
+        fi
+    done
+
+    sleep 5  # Sleep for 5 seconds before checking again
+done
